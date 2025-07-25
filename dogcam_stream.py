@@ -13,6 +13,8 @@ import os
 import signal  # For socket.send fix
 import multiprocessing as mp
 
+mp.set_start_method('spawn')  # Fix for fork/join issues in Gunicorn
+
 # Ignore SIGPIPE to prevent socket.send exceptions on client disconnects
 signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
@@ -69,7 +71,7 @@ def initialize_camera_and_sensor():
     global picam2, dht_device, output
     with init_lock:
         if picam2 is None:
-            for attempt in range(10):  # Increased retries for robustness
+            for attempt in range(10):  # Increased retries
                 try:
                     picam2 = Picamera2()
                     picam2.configure(picam2.create_video_configuration(main={"size": (640, 480)}))
@@ -91,7 +93,7 @@ def initialize_camera_and_sensor():
                 except Exception:
                     time.sleep(1)
             else:
-                print("Failed to initialize DHT after retries. Check wiring (pull-up resistor on GPIO4).")
+                print("Failed to initialize DHT after retries. Check wiring (pull-up resistor on GPIO4). Try changing to board.D17 if persists.")
 
 def update_temperature():
     font = ImageFont.load_default()
@@ -118,22 +120,29 @@ def update_temperature():
         time.sleep(5)
 
 def camera_capture_process():
-    initialize_camera_and_sensor()  # Init in this process
-    # Start temperature thread in this process
-    temp_thread = Thread(target=update_temperature)
-    temp_thread.daemon = True
-    temp_thread.start()
-    while True:
-        if output is None:
-            time.sleep(5)  # Skip if output None (init failed); retry init next loop
-            continue
-        with output.condition:
-            output.condition.wait()
-            frame = output.frame
-        try:
-            frame_queue.put_nowait(frame)  # Put latest frame, overwrite if full
-        except mp.queues.Full:
-            pass  # Discard if not consumed
+    try:
+        initialize_camera_and_sensor()  # Init in this process
+        # Start temperature thread in this process
+        temp_thread = Thread(target=update_temperature)
+        temp_thread.daemon = True
+        temp_thread.start()
+        while True:
+            if output is None:
+                time.sleep(5)  # Skip if output None; retry init next loop
+                continue
+            with output.condition:
+                output.condition.wait()
+                frame = output.frame
+            try:
+                frame_queue.put_nowait(frame)  # Put latest frame, overwrite if full
+            except mp.queues.Full:
+                pass  # Discard if not consumed
+    finally:
+        # Cleanup to release camera lock
+        if picam2 is not None:
+            picam2.stop_recording()
+            picam2.close()
+            print("Camera cleaned up.")
 
 # Create the process (start in hook)
 capture_proc = mp.Process(target=camera_capture_process, daemon=False)
