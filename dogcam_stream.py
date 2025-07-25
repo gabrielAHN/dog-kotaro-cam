@@ -1,4 +1,5 @@
 import os
+import io
 import threading
 from dotenv import load_dotenv
 from flask import Flask, Response, render_template, request
