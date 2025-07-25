@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 import os
 import signal
 import multiprocessing as mp
+import atexit
 
 try:
     mp.set_start_method('spawn')
@@ -71,7 +72,7 @@ def initialize_camera_and_sensor():
     global picam2, dht_device, output
     with init_lock:
         if picam2 is None:
-            for attempt in range(15):
+            for attempt in range(10):
                 try:
                     picam2 = Picamera2()
                     picam2.configure(picam2.create_video_configuration(main={"size": (640, 480)}))
@@ -80,7 +81,7 @@ def initialize_camera_and_sensor():
                     print("Camera initialized successfully.")
                     break
                 except Exception as e:
-                    time.sleep(3)
+                    time.sleep(2)
             else:
                 print("Failed to initialize camera after retries. Check hardware/connections.")
 
@@ -132,18 +133,17 @@ def camera_capture_process():
             with output.condition:
                 output.condition.wait()
                 frame = output.frame
-            if frame is not None:
-                try:
-                    frame_queue.put_nowait(frame)
-                except mp.queues.Full:
-                    pass
+            try:
+                frame_queue.put_nowait(frame)
+            except mp.queues.Full:
+                pass
     finally:
         if picam2 is not None:
             picam2.stop_recording()
             picam2.close()
             print("Camera cleaned up.")
 
-capture_proc = mp.Process(target=camera_capture_process, daemon=False)
+capture_proc = mp.Process(target=camera_capture_process)
 
 def custom_exit():
     if hasattr(capture_proc, '_popen') and capture_proc._popen is not None:
@@ -184,7 +184,7 @@ def stream():
                 time.sleep(1)
             while True:
                 try:
-                    frame = frame_queue.get(timeout=30)
+                    frame = frame_queue.get(timeout=5)
                     yield (b'--FRAME\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
                 except mp.queues.Empty:
                     yield (b'--FRAME\r\nContent-Type: image/jpeg\r\n\r\n' + b'\xFF\xD8\xFF\xE0\x00\x10JFIF\x00\x01\x01\x01\x00\x48\x00\x48\x00\x00\xFF\xD9' + b'\r\n')
