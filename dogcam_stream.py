@@ -12,9 +12,11 @@ from dotenv import load_dotenv
 import os
 import signal
 import multiprocessing as mp
-import atexit
 
-mp.set_start_method('spawn')
+try:
+    mp.set_start_method('spawn')
+except RuntimeError:
+    pass
 
 signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
@@ -69,7 +71,7 @@ def initialize_camera_and_sensor():
     global picam2, dht_device, output
     with init_lock:
         if picam2 is None:
-            for attempt in range(10):
+            for attempt in range(15):
                 try:
                     picam2 = Picamera2()
                     picam2.configure(picam2.create_video_configuration(main={"size": (640, 480)}))
@@ -78,20 +80,20 @@ def initialize_camera_and_sensor():
                     print("Camera initialized successfully.")
                     break
                 except Exception as e:
-                    time.sleep(2)
+                    time.sleep(3)
             else:
                 print("Failed to initialize camera after retries. Check hardware/connections.")
 
         if adafruit_dht and dht_device is None:
             for attempt in range(5):
                 try:
-                    dht_device = adafruit_dht.DHT22(board.D4, use_pulseio=False)
+                    dht_device = adafruit_dht.DHT22(board.D17, use_pulseio=False)
                     print("DHT sensor initialized successfully.")
                     break
                 except Exception:
                     time.sleep(1)
             else:
-                print("Failed to initialize DHT after retries. Check wiring (pull-up resistor on GPIO4). Try board.D17 if persists.")
+                print("Failed to initialize DHT after retries. Check wiring (pull-up resistor on GPIO17).")
 
 def update_temperature():
     font = ImageFont.load_default()
@@ -130,24 +132,26 @@ def camera_capture_process():
             with output.condition:
                 output.condition.wait()
                 frame = output.frame
-            try:
-                frame_queue.put_nowait(frame)
-            except mp.queues.Full:
-                pass
+            if frame is not None:
+                try:
+                    frame_queue.put_nowait(frame)
+                except mp.queues.Full:
+                    pass
     finally:
         if picam2 is not None:
             picam2.stop_recording()
             picam2.close()
             print("Camera cleaned up.")
 
-capture_proc = mp.Process(target=camera_capture_process)
+capture_proc = mp.Process(target=camera_capture_process, daemon=False)
 
 def custom_exit():
-    try:
-        capture_proc.terminate()
-        capture_proc.join(timeout=5)
-    except AssertionError:
-        pass  # Ignore join assertion in workers
+    if hasattr(capture_proc, '_popen') and capture_proc._popen is not None:
+        try:
+            capture_proc.terminate()
+            capture_proc.join(timeout=5)
+        except AssertionError:
+            pass
 
 atexit.register(custom_exit)
 
@@ -180,7 +184,7 @@ def stream():
                 time.sleep(1)
             while True:
                 try:
-                    frame = frame_queue.get(timeout=5)
+                    frame = frame_queue.get(timeout=30)
                     yield (b'--FRAME\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
                 except mp.queues.Empty:
                     yield (b'--FRAME\r\nContent-Type: image/jpeg\r\n\r\n' + b'\xFF\xD8\xFF\xE0\x00\x10JFIF\x00\x01\x01\x01\x00\x48\x00\x48\x00\x00\xFF\xD9' + b'\r\n')
