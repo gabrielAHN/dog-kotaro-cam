@@ -10,12 +10,12 @@ from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 from dotenv import load_dotenv
 import os
-import signal  # For socket.send fix
+import signal
 import multiprocessing as mp
+import atexit
 
-mp.set_start_method('spawn')  # Fix for fork/join issues in Gunicorn
+mp.set_start_method('spawn')
 
-# Ignore SIGPIPE to prevent socket.send exceptions on client disconnects
 signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
 try:
@@ -58,20 +58,18 @@ class StreamingOutput(FileOutput):
             self.buffer.seek(0)
             self.buffer.truncate()
 
-# Shared queue for latest frames (maxsize=1 to always have the most recent)
 frame_queue = mp.Queue(maxsize=1)
 
-# Globals for capture process (not shared)
 picam2 = None
 dht_device = None
 output = None
-init_lock = Lock()  # Not needed across processes, but kept for consistency
+init_lock = Lock()
 
 def initialize_camera_and_sensor():
     global picam2, dht_device, output
     with init_lock:
         if picam2 is None:
-            for attempt in range(10):  # Increased retries
+            for attempt in range(10):
                 try:
                     picam2 = Picamera2()
                     picam2.configure(picam2.create_video_configuration(main={"size": (640, 480)}))
@@ -80,20 +78,20 @@ def initialize_camera_and_sensor():
                     print("Camera initialized successfully.")
                     break
                 except Exception as e:
-                    time.sleep(2)  # Longer delay
+                    time.sleep(2)
             else:
                 print("Failed to initialize camera after retries. Check hardware/connections.")
 
         if adafruit_dht and dht_device is None:
-            for attempt in range(5):  # Retry DHT init silently
+            for attempt in range(5):
                 try:
-                    dht_device = adafruit_dht.DHT22(board.D4, use_pulseio=False)  # Fix for "unable to set line 4 to input"
+                    dht_device = adafruit_dht.DHT22(board.D4, use_pulseio=False)
                     print("DHT sensor initialized successfully.")
                     break
                 except Exception:
                     time.sleep(1)
             else:
-                print("Failed to initialize DHT after retries. Check wiring (pull-up resistor on GPIO4). Try changing to board.D17 if persists.")
+                print("Failed to initialize DHT after retries. Check wiring (pull-up resistor on GPIO4). Try board.D17 if persists.")
 
 def update_temperature():
     font = ImageFont.load_default()
@@ -106,7 +104,7 @@ def update_temperature():
                     temperature_c = dht_device.temperature
                     break
                 except RuntimeError:
-                    time.sleep(2)  # Silent retry
+                    time.sleep(2)
             if temperature_c is not None:
                 overlay = Image.new("RGBA", (640, 60), (0, 0, 0, 128))
                 draw = ImageDraw.Draw(overlay)
@@ -121,33 +119,38 @@ def update_temperature():
 
 def camera_capture_process():
     try:
-        initialize_camera_and_sensor()  # Init in this process
-        # Start temperature thread in this process
+        initialize_camera_and_sensor()
         temp_thread = Thread(target=update_temperature)
         temp_thread.daemon = True
         temp_thread.start()
         while True:
             if output is None:
-                time.sleep(5)  # Skip if output None; retry init next loop
+                time.sleep(5)
                 continue
             with output.condition:
                 output.condition.wait()
                 frame = output.frame
             try:
-                frame_queue.put_nowait(frame)  # Put latest frame, overwrite if full
+                frame_queue.put_nowait(frame)
             except mp.queues.Full:
-                pass  # Discard if not consumed
+                pass
     finally:
-        # Cleanup to release camera lock
         if picam2 is not None:
             picam2.stop_recording()
             picam2.close()
             print("Camera cleaned up.")
 
-# Create the process (start in hook)
-capture_proc = mp.Process(target=camera_capture_process, daemon=False)
+capture_proc = mp.Process(target=camera_capture_process)
 
-# Semaphore to limit concurrent stream viewers (max 5)
+def custom_exit():
+    try:
+        capture_proc.terminate()
+        capture_proc.join(timeout=5)
+    except AssertionError:
+        pass  # Ignore join assertion in workers
+
+atexit.register(custom_exit)
+
 stream_semaphore = Semaphore(5)
 
 def check_auth():
@@ -173,15 +176,13 @@ def stream():
 
     def generate():
         try:
-            # Brief wait for initial frame if queue empty
             if frame_queue.empty():
                 time.sleep(1)
             while True:
                 try:
-                    frame = frame_queue.get(timeout=5)  # Timeout to avoid permanent block
+                    frame = frame_queue.get(timeout=5)
                     yield (b'--FRAME\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
                 except mp.queues.Empty:
-                    # Yield placeholder on timeout (minimal empty JPEG)
                     yield (b'--FRAME\r\nContent-Type: image/jpeg\r\n\r\n' + b'\xFF\xD8\xFF\xE0\x00\x10JFIF\x00\x01\x01\x01\x00\x48\x00\x48\x00\x00\xFF\xD9' + b'\r\n')
         finally:
             stream_semaphore.release()
