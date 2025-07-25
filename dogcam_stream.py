@@ -69,7 +69,7 @@ def initialize_camera_and_sensor():
     global picam2, dht_device, output
     with init_lock:
         if picam2 is None:
-            for attempt in range(5):  # Retry camera init
+            for attempt in range(10):  # Increased retries for robustness
                 try:
                     picam2 = Picamera2()
                     picam2.configure(picam2.create_video_configuration(main={"size": (640, 480)}))
@@ -78,9 +78,9 @@ def initialize_camera_and_sensor():
                     print("Camera initialized successfully.")
                     break
                 except Exception as e:
-                    time.sleep(1)
+                    time.sleep(2)  # Longer delay
             else:
-                print("Failed to initialize camera after retries.")
+                print("Failed to initialize camera after retries. Check hardware/connections.")
 
         if adafruit_dht and dht_device is None:
             for attempt in range(5):  # Retry DHT init silently
@@ -124,6 +124,9 @@ def camera_capture_process():
     temp_thread.daemon = True
     temp_thread.start()
     while True:
+        if output is None:
+            time.sleep(5)  # Skip if output None (init failed); retry init next loop
+            continue
         with output.condition:
             output.condition.wait()
             frame = output.frame
