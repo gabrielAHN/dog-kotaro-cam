@@ -3,12 +3,10 @@ Description=Dog Stream Flask App
 After=network.target
 
 [Service]
-User=hidalgo-cam
-Environment=USER_HOME=/home/hidalgo-cam
-Environment=PROJECT_DIR=dog-kotaro-cam
-WorkingDirectory=${USER_HOME}/${PROJECT_DIR}
-EnvironmentFile=${USER_HOME}/${PROJECT_DIR}/.env
-ExecStart=${USER_HOME}/.local/bin/uv run gunicorn --worker-class gthread --workers 1 --threads 4 --bind 0.0.0.0:5000 dogcam_stream:app
+User=your-user
+WorkingDirectory=/home/your-user/dogo-cam-project
+EnvironmentFile=/home/your-user/dogo-cam-project/.env
+ExecStart=/home/your-user/.local/bin/uv run gunicorn --worker-class gthread --workers 1 --threads 4 --bind 0.0.0.0:5000 dogcam_stream:app
 Restart=always
 RestartSec=10
 LimitNOFILE=4096

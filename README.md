@@ -2,15 +2,19 @@
 
 This project sets up a Raspberry Pi 3 to stream live video from a camera module (e.g., for monitoring a pet like a dog) and display environmental temperature/humidity data from a sensor.
 
+![raspberry-pi-image](https://github.com/gabrielAHN/dogo-cam-project/blob/main/img/raspberry-pi-cam.png?raw=true)
+
 The stream is accessible via a web interface with basic authentication, limited to a maximum of 3 concurrent viewers. It uses Flask for the web app, Picamera2 for video, and Adafruit libraries for the sensor.
+
+![Dog View](https://github.com/gabrielAHN/dogo-cam-project/blob/main/img/dog-stream.png?raw=true)
 
 Dependencies are managed with UV via a `pyproject.toml` file. The app runs on boot using systemd, and optionally, you can expose it securely via Cloudflare Tunnel (also boot-enabled).
 
 ## Prerequisites
-- Raspberry Pi 3 with Raspberry Pi OS (64-bit recommended).
-- Picamera Module V3 (or compatible) connected and enabled.
-- OSOYOO DHT22 (or standard DHT22) temperature/humidity sensor.
-- A domain with DNS hosted (e.g., via AWS Route 53) for remote access—use a placeholder like `your-domain.com`.
+- [Raspberry Pi 3](https://www.amazon.com/Raspberry-Pi-Model-Board-Plus/dp/B0BNJPL4MW?sr=8-1) with [Raspberry Pi OS (64-bit recommended)](https://www.raspberrypi.com/software/operating-systems/).
+- [Picamera Module V3 (or compatible) connected and enabled](https://www.amazon.com/Arducam-Raspberry-Camera-Autofocus-15-22pin/dp/B0C9PYCV9S?sr=8-1).
+- [OSOYOO DHT22 (or standard DHT22) temperature/humidity sensor](https://www.amazon.com/Gowoops-Temperature-Humidity-Measurement-Raspberry/dp/B073F472JL?sr=8-1).
+- (OPTIONAL) A domain with DNS hosted (e.g., via AWS Route 53) for remote access—use a placeholder like `your-domain.com`.
 - Basic tools: Git, Python 3.12+.
 
 ## Hardware Setup
@@ -103,11 +107,9 @@ Dependencies are managed with UV via a `pyproject.toml` file. The app runs on bo
 
   [Service]
   User=your-user
-  Environment=USER_HOME=/home/your-user
-  Environment=PROJECT_DIR=dogo-cam-project
-  WorkingDirectory=${USER_HOME}/${PROJECT_DIR}
-  EnvironmentFile=${USER_HOME}/${PROJECT_DIR}/.env
-  ExecStart=${USER_HOME}/.local/bin/uv run gunicorn --worker-class gthread --workers 1 --threads 4 --bind 0.0.0.0:5000 dogcam_stream:app
+  WorkingDirectory=/home/your-user/dogo-cam-project
+  EnvironmentFile=/home/your-user/dogo-cam-project/.env
+  ExecStart=/home/your-user/.local/bin/uv run gunicorn --worker-class gthread --workers 1 --threads 4 --bind 0.0.0.0:5000 dogcam_stream:app
   Restart=always
   RestartSec=10
   LimitNOFILE=4096
@@ -152,7 +154,7 @@ Expose the local app securely to your domain (e.g., `your-domain.com`) without p
 - Create `/etc/systemd/system/cloudflared.service`:
   ```
   [Unit]
-  Description=Cloudflare Tunnel
+  Description=Cloudflare Tunnel for Dog Stream
   After=network.target
 
   [Service]

@@ -4,10 +4,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kotaro Stream</title>
-
+    <title>{{ dog_name }} Stream</title>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@700&display=swap">
-
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <style>
         html,
@@ -52,9 +50,8 @@
 </head>
 
 <body>
-    <h1>Kotaro Stream</h1>
+    <h1>{{ dog_name }} Stream</h1>
     <img src="{{ url_for('video_feed') }}" alt="Live Dog Cam">
-
     <div id="temp" hx-get="/temp" hx-trigger="load, every 10s" hx-swap="innerHTML">
         Loading temperature...
     </div>

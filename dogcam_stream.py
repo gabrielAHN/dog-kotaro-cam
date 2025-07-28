@@ -65,7 +65,8 @@ def gen():
 @app.route('/')
 @auth.login_required
 def index():
-    return render_template('index.html')
+    dog_name = os.getenv('DOG_NAME', 'Dog')
+    return render_template('index.html', dog_name=dog_name)
 
 
 @app.route('/video_feed')
