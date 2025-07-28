@@ -1,6 +1,8 @@
 import io
 import os
+import time
 import threading
+import atexit
 import board
 import adafruit_dht
 from dotenv import load_dotenv
@@ -17,13 +19,8 @@ auth = HTTPBasicAuth()
 camera = Picamera2()
 viewer_semaphore = threading.Semaphore(int(os.getenv('MAX_VIEWERS', 3)))
 
-
 dht_device = adafruit_dht.DHT22(board.D4)
-
-
-@auth.verify_password
-def verify_password(username, password):
-    return username == os.getenv('BASIC_AUTH_USERNAME') and password == os.getenv('BASIC_AUTH_PASSWORD')
+dht_lock = threading.Lock()
 
 
 class StreamingOutput(io.BufferedIOBase):
@@ -38,6 +35,22 @@ class StreamingOutput(io.BufferedIOBase):
 
 
 output = StreamingOutput()
+
+
+camera.configure(camera.create_video_configuration(main={"size": (640, 480)}))
+camera.start_recording(JpegEncoder(), FileOutput(output))
+
+
+def cleanup():
+    camera.stop_recording()
+
+
+atexit.register(cleanup)
+
+
+@auth.verify_password
+def verify_password(username, password):
+    return username == os.getenv('BASIC_AUTH_USERNAME') and password == os.getenv('BASIC_AUTH_PASSWORD')
 
 
 def gen():
@@ -69,21 +82,18 @@ def video_feed():
 @app.route('/temp')
 @auth.login_required
 def temp():
-    try:
-        temperature = dht_device.temperature
-        humidity = dht_device.humidity
-        if temperature is not None and humidity is not None:
-            return f"Env Temp: {temperature}°C | Humidity: {humidity}%"
-        else:
-            return "Sensor reading failed. Retrying..."
-    except RuntimeError:
-        return "Sensor checksum error. Retrying..."
-    except Exception as error:
-        return f"Error: {str(error)}"
-
-
-if __name__ == '__main__':
-    camera.configure(camera.create_video_configuration(
-        main={"size": (640, 480)}))
-    camera.start_recording(JpegEncoder(), FileOutput(output))
-    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)), threaded=True)
+    max_retries = 5
+    with dht_lock:
+        for attempt in range(max_retries):
+            try:
+                temperature = dht_device.temperature
+                humidity = dht_device.humidity
+                if temperature is not None and humidity is not None:
+                    return f"Room Temp: {temperature}°C ({temperature * 9/5 + 32}°F) | Humidity: {humidity}%"
+            except RuntimeError:
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                continue
+            except Exception as error:
+                return f"Error: {str(error)}"
+    return "Data unavailable. Retrying soon..."

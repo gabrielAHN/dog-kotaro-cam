@@ -1,13 +1,18 @@
-nano 7.2                                                /etc/systemd/system/cloudflared-tunnel.service                                                         
 [Unit]
-Description=Cloudflare Tunnel for Dog Stream
+Description=Dog Stream Flask App
 After=network.target
 
 [Service]
 User=hidalgo-cam
-ExecStart=/usr/local/bin/cloudflared tunnel --config /home/hidalgo-cam/.cloudflared/config.yml run dog-stream-tunnel
+Environment=USER_HOME=/home/hidalgo-cam
+Environment=PROJECT_DIR=dog-kotaro-cam
+WorkingDirectory=${USER_HOME}/${PROJECT_DIR}
+EnvironmentFile=${USER_HOME}/${PROJECT_DIR}/.env
+ExecStart=${USER_HOME}/.local/bin/uv run gunicorn --worker-class gthread --workers 1 --threads 4 --bind 0.0.0.0:5000 dogcam_stream:app
 Restart=always
 RestartSec=10
+LimitNOFILE=4096
+OOMScoreAdjust=-1000
 
 [Install]
 WantedBy=multi-user.target

@@ -5,6 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-"opencv-python",
     "flask",
+    "flask-httpauth",
+    "picamera2",
+    "python-dotenv",
+    "adafruit-blinka",
+    "adafruit-circuitpython-dht",
+    "gunicorn",
 ]
