@@ -1,0 +1,16 @@
+[Unit]
+Description=Dog Stream Flask App
+After=network.target
+
+[Service]
+User=hidalgo-cam
+WorkingDirectory=/home/hidalgo-cam/dog-kotaro-cam
+EnvironmentFile=/home/hidalgo-cam/dog-kotaro-cam/.env
+ExecStart=/home/hidalgo-cam/.local/bin/uv run /home/hidalgo-cam/dog-kotaro-cam/dogcam_stream.py
+Restart=always
+RestartSec=10
+LimitNOFILE=4096  # Helps with file handles for streaming
+OOMScoreAdjust=-1000  # Protects against low-RAM kills on RPi 3
+
+[Install]
+WantedBy=multi-user.target
