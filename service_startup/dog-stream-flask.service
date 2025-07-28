@@ -1,16 +1,13 @@
+nano 7.2                                                /etc/systemd/system/cloudflared-tunnel.service                                                         
 [Unit]
-Description=Dog Stream Flask App
+Description=Cloudflare Tunnel for Dog Stream
 After=network.target
 
 [Service]
 User=hidalgo-cam
-WorkingDirectory=/home/hidalgo-cam/dog-kotaro-cam
-EnvironmentFile=/home/hidalgo-cam/dog-kotaro-cam/.env
-ExecStart=/home/hidalgo-cam/.local/bin/uv run /home/hidalgo-cam/dog-kotaro-cam/dogcam_stream.py
+ExecStart=/usr/local/bin/cloudflared tunnel --config /home/hidalgo-cam/.cloudflared/config.yml run dog-stream-tunnel
 Restart=always
 RestartSec=10
-LimitNOFILE=4096  # Helps with file handles for streaming
-OOMScoreAdjust=-1000  # Protects against low-RAM kills on RPi 3
 
 [Install]
 WantedBy=multi-user.target
