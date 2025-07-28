@@ -1,0 +1,18 @@
+[Unit]
+Description=Dog Stream Flask App
+After=network.target
+
+[Service]
+User=hidalgo-cam
+Environment=USER_HOME=/home/hidalgo-cam
+Environment=PROJECT_DIR=dog-kotaro-cam
+WorkingDirectory=${USER_HOME}/${PROJECT_DIR}
+EnvironmentFile=${USER_HOME}/${PROJECT_DIR}/.env
+ExecStart=${USER_HOME}/.local/bin/uv run dogcam_stream.py
+Restart=always
+RestartSec=10
+LimitNOFILE=4096
+OOMScoreAdjust=-1000
+
+[Install]
+WantedBy=multi-user.target

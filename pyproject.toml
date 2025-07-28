@@ -1,0 +1,15 @@
+[project]
+name = "dog-kotaro-cam"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "flask",
+    "flask-httpauth",
+    "picamera2",
+    "python-dotenv",
+    "adafruit-blinka",
+    "adafruit-circuitpython-dht",
+    "gunicorn",
+]

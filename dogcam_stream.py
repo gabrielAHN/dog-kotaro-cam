@@ -1,108 +1,99 @@
 import io
-import picamera
-import logging
-import socketserver
-from threading import Condition, Thread
-from http import server
+import os
 import time
-import adafruit_dht
+import threading
+import atexit
 import board
+import adafruit_dht
+from dotenv import load_dotenv
+from flask import Flask, Response, render_template, request
+from flask_httpauth import HTTPBasicAuth
+from picamera2 import Picamera2
+from picamera2.encoders import JpegEncoder
+from picamera2.outputs import FileOutput
 
-# DHT22 setup
-dht_device = adafruit_dht.DHT22(board.D4)  # GPIO 4
+load_dotenv()
 
-# Web page template
-PAGE = """\
-<html>
-<head>
-<title>Dog Cam with Temperature</title>
-</head>
-<body>
-<center><h1>Live Stream of Your Dog</h1></center>
-<center><img src="stream.mjpg" width="640" height="480"></center>
-</body>
-</html>
-"""
+app = Flask(__name__)
+auth = HTTPBasicAuth()
+camera = Picamera2()
+viewer_semaphore = threading.Semaphore(int(os.getenv('MAX_VIEWERS', 3)))
 
-class StreamingOutput(object):
+dht_device = adafruit_dht.DHT22(board.D4)
+dht_lock = threading.Lock()
+
+
+class StreamingOutput(io.BufferedIOBase):
     def __init__(self):
         self.frame = None
-        self.buffer = io.BytesIO()
-        self.condition = Condition()
+        self.condition = threading.Condition()
 
     def write(self, buf):
-        if buf.startswith(b'\xff\xd8'):
-            self.buffer.truncate()
-            with self.condition:
-                self.frame = self.buffer.getvalue()
-                self.condition.notify_all()
-            self.buffer.seek(0)
-        return self.buffer.write(buf)
+        with self.condition:
+            self.frame = buf
+            self.condition.notify_all()
 
-class StreamingHandler(server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == '/':
-            self.send_response(301)
-            self.send_header('Location', '/index.html')
-            self.end_headers()
-        elif self.path == '/index.html':
-            content = PAGE.encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html')
-            self.send_header('Content-Length', len(content))
-            self.end_headers()
-            self.wfile.write(content)
-        elif self.path == '/stream.mjpg':
-            self.send_response(200)
-            self.send_header('Age', 0)
-            self.send_header('Cache-Control', 'no-cache, private')
-            self.send_header('Pragma', 'no-cache')
-            self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=FRAME')
-            self.end_headers()
-            try:
-                while True:
-                    with output.condition:
-                        output.condition.wait()
-                        frame = output.frame
-                    self.wfile.write(b'--FRAME\r\n')
-                    self.send_header('Content-Type', 'image/jpeg')
-                    self.send_header('Content-Length', len(frame))
-                    self.end_headers()
-                    self.wfile.write(frame)
-                    self.wfile.write(b'\r\n')
-            except Exception as e:
-                logging.warning('Removed streaming client %s: %s', self.client_address, str(e))
-        else:
-            self.send_error(404)
-            self.end_headers()
 
-class StreamingServer(socketserver.ThreadingMixIn, server.HTTPServer):
-    allow_reuse_address = True
-    daemon_threads = True
+output = StreamingOutput()
 
-# Function to update temperature overlay
-def update_temperature(camera):
+
+camera.configure(camera.create_video_configuration(main={"size": (640, 480)}))
+camera.start_recording(JpegEncoder(), FileOutput(output))
+
+
+def cleanup():
+    camera.stop_recording()
+
+
+atexit.register(cleanup)
+
+
+@auth.verify_password
+def verify_password(username, password):
+    return username == os.getenv('BASIC_AUTH_USERNAME') and password == os.getenv('BASIC_AUTH_PASSWORD')
+
+
+def gen():
     while True:
-        try:
-            temperature_c = dht_device.temperature
-            camera.annotate_text = f"Temperature: {temperature_c:.1f} C"
-        except RuntimeError as err:
-            print(err.args[0])  # Handle sensor read errors
-        time.sleep(5)  # Update every 5 seconds
+        with output.condition:
+            output.condition.wait()
+            frame = output.frame
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
-# Start camera and server
-with picamera.PiCamera(resolution='640x480', framerate=24) as camera:
-    output = StreamingOutput()
-    camera.start_recording(output, format='mjpeg')
 
-    # Start temperature update thread
-    temp_thread = Thread(target=update_temperature, args=(camera,))
-    temp_thread.daemon = True
-    temp_thread.start()
+@app.route('/')
+@auth.login_required
+def index():
+    return render_template('index.html')
 
+
+@app.route('/video_feed')
+@auth.login_required
+def video_feed():
+    if not viewer_semaphore.acquire(blocking=False):
+        return "Max viewers reached. Try again later.", 503
     try:
-        address = ('', 8000)
-        server = StreamingServer(address, StreamingHandler)
-        server.serve_forever()
+        return Response(gen(), mimetype='multipart/x-mixed-replace; boundary=frame')
     finally:
-        camera.stop_recording()
+        viewer_semaphore.release()
+
+
+@app.route('/temp')
+@auth.login_required
+def temp():
+    max_retries = 5
+    with dht_lock:
+        for attempt in range(max_retries):
+            try:
+                temperature = dht_device.temperature
+                humidity = dht_device.humidity
+                if temperature is not None and humidity is not None:
+                    return f"Room Temp: {temperature}°C ({temperature * 9/5 + 32}°F) | Humidity: {humidity}%"
+            except RuntimeError:
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                continue
+            except Exception as error:
+                return f"Error: {str(error)}"
+    return "Data unavailable. Retrying soon..."
