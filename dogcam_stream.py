@@ -13,11 +13,13 @@ load_dotenv()
 app = Flask(__name__)
 auth = HTTPBasicAuth()
 camera = Picamera2()
-viewer_semaphore = threading.Semaphore(int(os.getenv('MAX_VIEWERS', 3)))  # Limit from .env
+viewer_semaphore = threading.Semaphore(int(os.getenv('MAX_VIEWERS', 3)))
+
 
 @auth.verify_password
 def verify_password(username, password):
     return username == os.getenv('BASIC_AUTH_USERNAME') and password == os.getenv('BASIC_AUTH_PASSWORD')
+
 
 class StreamingOutput(io.BufferedIOBase):
     def __init__(self):
@@ -29,7 +31,9 @@ class StreamingOutput(io.BufferedIOBase):
             self.frame = buf
             self.condition.notify_all()
 
+
 output = StreamingOutput()
+
 
 def gen():
     while True:
@@ -39,20 +43,23 @@ def gen():
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
+
 @app.route('/')
 @auth.login_required
 def index():
-    return render_template('index.html')  # Simple HTML with <img src="/video_feed">
+    return render_template('index.html')
+
 
 @app.route('/video_feed')
 @auth.login_required
 def video_feed():
-    if not viewer_semaphore.acquire(blocking=False):  # Non-blocking acquire
-        return "Max viewers reached. Try again later.", 503  # Service Unavailable
+    if not viewer_semaphore.acquire(blocking=False):
+        return "Max viewers reached. Try again later.", 503
     try:
         return Response(gen(), mimetype='multipart/x-mixed-replace; boundary=frame')
     finally:
-        viewer_semaphore.release()  # Release on disconnect
+        viewer_semaphore.release()
+
 
 @app.route('/temp')
 @auth.login_required
@@ -60,7 +67,9 @@ def temp():
     temp = os.popen('vcgencmd measure_temp').readline().strip()
     return f"RPi Temperature: {temp}"
 
+
 if __name__ == '__main__':
-    camera.configure(camera.create_video_configuration(main={"size": (640, 480)}))
+    camera.configure(camera.create_video_configuration(
+        main={"size": (640, 480)}))
     camera.start_recording(JpegEncoder(), FileOutput(output))
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)), threaded=True)
