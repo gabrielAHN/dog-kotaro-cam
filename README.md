@@ -16,13 +16,13 @@ Manual Raspberry Pi dog camera: Flask web UI, live Picamera2 stream, pan/tilt MG
 
 ## Hardware
 
-Raspberry Pi (Pi OS) + CSI camera + 2× MG90S servos, plus optional GPIO toggle switch, DHT22 (`GPIO4`), and cooling fan.
+Raspberry Pi 3B (Pi OS) + **wide-angle NoIR CSI camera (OV5647 sensor, no IR-cut filter)** + 2× MG90S servos, plus optional GPIO toggle switch, DHT22 (`GPIO4`), and cooling fan.
 
 ![Raspberry Pi camera build](img/raspberry-pi-cam.png)
 
 | Part | Signal / V+ / GND pins | Notes |
 |------|------------------------|-------|
-| CSI camera | ribbon → CSI port | dedicated camera port, not GPIO |
+| NoIR wide-angle camera | ribbon → CSI port | OV5647 sensor; sees in the dark under IR, wide FoV. Dedicated camera port, not GPIO |
 | Tilt servo (servo1) | `GPIO18` (Pin 12) / Pin 2 (5V) / Pin 14 | |
 | Pan servo (servo2) | `GPIO19` (Pin 35) / Pin 4 (5V) / Pin 39 | |
 | Toggle switch | `GPIO17` (Pin 11) / Pin 17 (3.3V) / Pin 25 | 3‑pin module |
@@ -30,6 +30,8 @@ Raspberry Pi (Pi OS) + CSI camera + 2× MG90S servos, plus optional GPIO toggle 
 | Cooling fan | Pin 4 (5V, split with pan) / Pin 6 | |
 
 Servos and fan draw from the Pi 5V rail with shared ground. The mount is inverted, so the stream is flipped in software (`DOGCAM_CAMERA_VIEW=upside_down`). See `PIN_DIAGRAM.md` for the full pinout.
+
+> **Camera note:** the sensor reports as a plain `ov5647` regardless of the lens/filter, so software can't tell it's the NoIR wide-angle module — the NoIR behaviour is configured, not auto-detected. See [Camera capabilities](#camera-capabilities) for the tuning, day/night and image config.
 
 **Switch** (`ky004-control.py`): ON (`GPIO17` low) starts `dog-stream` (and `cloudflared-tunnel` if enabled); OFF stops them cleanly. Set `SWITCH_ON_VALUE=1` if your module is inverted, or `SWITCH_PIN` for a different GPIO.
 
@@ -47,8 +49,24 @@ SECRET_KEY=replace_me
 MAX_VIEWERS=3
 PORT=5000
 STREAM_MAX_FPS=15          # framerate cap; lower = less power draw (see Power & stability)
+STREAM_WIDTH=1296          # stream resolution (default 1296x972, was 640x480)
+STREAM_HEIGHT=972          #   1080p works but VGA/960p are gentler on the 5V rail
 DOG_NAME=Kotaro
 DOGCAM_CAMERA_VIEW=normal  # or upside_down
+# --- NoIR wide-angle camera: colour tuning + day/night ---
+CAM_TUNING_FILE=ov5647_noir.json  # NoIR tuning kills the daylight magenta cast; "" = sensor default
+CAM_SHARPNESS=1.5          # ISP tuning (0-16); also CAM_CONTRAST/CAM_SATURATION/CAM_BRIGHTNESS/CAM_EV
+CAM_NOISE_REDUCTION=fast   # off|fast|high_quality|minimal|zsl
+CAM_SAT_BRIGHT=1.0         # saturation in real daylight (>= CAM_BRIGHT_LUX)
+CAM_SAT_DIM=0.7            # saturation at the day/night edge (artificial light = IR false colour)
+CAM_BRIGHT_LUX=400         # lux considered real daylight
+NIGHT_MAX_FPS=6            # night mode lowers fps so exposure can lengthen (real sensitivity)
+CAM_NIGHT_EV_MAX=1.0       # EV bias at total darkness (scaled to 0 at DAYNIGHT_NIGHT_LUX)
+DAYNIGHT_AUTO=1            # auto colour(day)/grayscale(night) off the camera Lux meter
+DAYNIGHT_NIGHT_LUX=5       # below this (sustained DAYNIGHT_NIGHT_AFTER=45s) -> night
+DAYNIGHT_DAY_LUX=12        # above this (sustained DAYNIGHT_DAY_AFTER=8s) -> day; eager to show colour
+DAYNIGHT_MODE=auto         # startup override: auto|day|night
+CAM_ZOOM=1.0               # digital zoom 1.0-CAM_ZOOM_MAX(4.0) via ScalerCrop
 SWITCH_PIN=17
 SWITCH_ON_VALUE=0
 TEMP_SOURCE=sensor         # or ha
@@ -60,6 +78,79 @@ See `.env.example` for the full list (servo tuning, Home Assistant, Cloudflare, 
 **Reverse‑proxy mode** — when another host (e.g. a Mac mini running Traefik/Authelia/Cloudflare) owns the public domain and proxies to the Pi: set `ENABLE_CLOUDFLARED=0`, `TRUST_PROXY_HEADERS=1`, and (behind Authelia) `TRUST_PROXY_AUTH_HEADERS=1` so a `Remote-User` header is trusted, plus `DOGCAM_LOGOUT_URL=https://auth.example/logout`. Camera movement is limited to users in `DOGCAM_CONTROL_GROUPS`; others can view only. Keep all `TRUST_PROXY_*` at `0` in standalone mode.
 
 **Temperature source** — `/temp` reads a local DHT22 (`TEMP_SOURCE=sensor`, needs `adafruit_dht`, wired to `GPIO4`) or Home Assistant (`TEMP_SOURCE=ha` + `HA_URL`/`HA_TOKEN`/`HA_*_ENTITY` using an HA long‑lived token). HA mode skips the DHT22 dependency.
+
+## Camera capabilities
+
+The sensor is an **OV5647 behind a wide‑angle NoIR (no IR‑cut filter) lens**. NoIR sees in the dark under IR light, but has two quirks this app handles:
+
+- **Daytime magenta cast.** With no IR‑cut filter, IR leaks into the red/blue channels and standard `ov5647.json` can't correct it (AWB alone leaves it purple). `CAM_TUNING_FILE=ov5647_noir.json` loads the NoIR colour‑correction matrix and neutralises it. *The tuned `Picamera2` must be constructed before any other camera‑manager call — `global_camera_info()` first silently pins the default tuning.*
+- **Automatic day/night.** `DAYNIGHT_AUTO=1` runs **colour by day, grayscale by night** (colour is pure noise under IR in the dark), switched off the camera's own AE **Lux** meter — no extra hardware. Two thresholds (`DAYNIGHT_NIGHT_LUX` / `DAYNIGHT_DAY_LUX`) with per‑direction sustain times give hysteresis; recovery to day is eager and descent to night is lazy, so a lit room always shows colour.
+- **Light‑adaptive tuning.** Under artificial light IR reflects unevenly (green ceiling, magenta fabric) — no white balance fixes it and saturation only amplifies it. So saturation scales with lux (`CAM_SAT_DIM` at the day edge → `CAM_SAT_BRIGHT` in real daylight). Night mode drops to `NIGHT_MAX_FPS` so exposure can lengthen (real light gathering, less power) and adds an EV bias that scales with darkness (a fixed boost blows out a lit room).
+
+All image tuning (`CAM_*`), day/night switching and digital zoom are **ISP‑side `set_controls()` — no pipeline restart and no measurable extra power** (bench‑tested: identical `vcgencmd get_throttled` at VGA vs 1296×972 vs 1080p under a live viewer; the `STREAM_MAX_FPS` cap, not pixel count, bounds the draw). Endpoints (control actions need `DOGCAM_CONTROL_GROUPS`; GETs are view‑only):
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/camera/info` | GET | active resolution, fps cap, zoom, tuning, day/night mode + lux |
+| `/camera/daynight` | GET / POST | read status / set override `{"mode":"auto\|day\|night"}` |
+| `/camera/zoom` | GET / POST | read / set digital zoom `{"zoom":2.0}` or `{"step":0.5}` |
+| `/snapshot` | GET | latest frame as a still JPEG (serves the live frame — no extra capture) |
+
+### Camera configuration reference
+
+Every knob is an env var in `.env` with a safe default — nothing below is required, and unset values keep the sensor/ISP default. Change them without touching code; a restart applies resolution/tuning-file changes, while day/night, saturation, zoom and EV adjust live. The **Default** column is the value shipped in `.env.example` (a few internal code fallbacks differ slightly).
+
+**Resolution & tuning**
+
+| Variable | Default | Description |
+|---|---|---|
+| `STREAM_WIDTH` × `STREAM_HEIGHT` | `1296` × `972` | Stream resolution. 640×480 / 800×600 are lighter; 1920×1080 works. Pixel count barely affects the 5V rail at a fixed fps. |
+| `STREAM_MAX_FPS` | `15` | Framerate cap — the real power lever (higher = more brown-out risk). |
+| `CAM_TUNING_FILE` | `ov5647_noir.json` | libcamera tuning file. NoIR file removes the daylight magenta cast; set empty (`CAM_TUNING_FILE=`) for the sensor default. |
+| `DOGCAM_CAMERA_VIEW` | `normal` | `upside_down` flips h+v for an inverted mount. |
+
+**Image quality (ISP, ~no power cost)**
+
+| Variable | Default | Description |
+|---|---|---|
+| `CAM_SHARPNESS` | `1.5` | 0–16 (1.0 = neutral). |
+| `CAM_CONTRAST` | unset | 0–32 (1.0 = neutral). |
+| `CAM_SATURATION` | unset | 0–32. If set, becomes the daylight anchor for the lux-adaptive curve; leave unset to use `CAM_SAT_BRIGHT`/`CAM_SAT_DIM`. |
+| `CAM_BRIGHTNESS` | unset | −1.0 to 1.0. |
+| `CAM_EV` | unset | Exposure bias, −8.0 to 8.0 (day mode). |
+| `CAM_AWB_MODE` | unset (auto) | `auto`/`incandescent`/`tungsten`/`fluorescent`/`indoor`/`daylight`/`cloudy`/`custom`. |
+| `CAM_NOISE_REDUCTION` | `fast` | `off`/`fast`/`high_quality`/`minimal`/`zsl`. |
+
+**Automatic day/night (NoIR)**
+
+| Variable | Default | Description |
+|---|---|---|
+| `DAYNIGHT_AUTO` | `1` | Enable auto colour(day)/grayscale(night) off the Lux meter. |
+| `DAYNIGHT_NIGHT_LUX` | `5` | Below this (sustained) → night. |
+| `DAYNIGHT_DAY_LUX` | `12` | Above this (sustained) → day. Must be > night; low so any real light shows colour. |
+| `DAYNIGHT_NIGHT_AFTER` | `45` | Seconds below `NIGHT_LUX` before going grayscale (lazy). |
+| `DAYNIGHT_DAY_AFTER` | `8` | Seconds above `DAY_LUX` before going colour (eager — never stuck grey in a lit room). |
+| `DAYNIGHT_CHECK_INTERVAL` | `10` | Seconds between Lux checks. |
+| `DAYNIGHT_MODE` | `auto` | Startup / manual override: `auto`/`day`/`night`. |
+
+**Light-adaptive tuning**
+
+| Variable | Default | Description |
+|---|---|---|
+| `CAM_SAT_BRIGHT` | `1.0` | Saturation in real daylight (≥ `CAM_BRIGHT_LUX`). |
+| `CAM_SAT_DIM` | `0.7` | Saturation at the day/night edge — damped so artificial-light IR false colour isn't amplified. |
+| `CAM_BRIGHT_LUX` | `400` | Lux treated as real daylight (top of the saturation ramp). |
+| `NIGHT_MAX_FPS` | `6` | Night fps cap: lower = longer exposure = real sensitivity, less power. |
+| `CAM_NIGHT_EV_MAX` | `1.0` | EV brightness lift at total darkness, scaled to 0 at `NIGHT_LUX` (a fixed lift blows out a lit room). |
+
+**Digital zoom**
+
+| Variable | Default | Description |
+|---|---|---|
+| `CAM_ZOOM` | `1.0` | Startup zoom (1.0 = full field of view). |
+| `CAM_ZOOM_MAX` | `4.0` | Max zoom the `/camera/zoom` endpoint allows. |
+
+Tests: `python3 -m unittest tests.test_camera_features` (runs off‑Pi with stubbed camera libs).
 
 ## Raspberry Pi setup
 
