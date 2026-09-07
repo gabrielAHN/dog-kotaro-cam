@@ -47,8 +47,24 @@ SECRET_KEY=replace_me
 MAX_VIEWERS=3
 PORT=5000
 STREAM_MAX_FPS=15          # framerate cap; lower = less power draw (see Power & stability)
+STREAM_WIDTH=1296          # stream resolution (default 1296x972, was 640x480)
+STREAM_HEIGHT=972          #   1080p works but VGA/960p are gentler on the 5V rail
 DOG_NAME=Kotaro
 DOGCAM_CAMERA_VIEW=normal  # or upside_down
+# --- NoIR wide-angle camera: colour tuning + day/night ---
+CAM_TUNING_FILE=ov5647_noir.json  # NoIR tuning kills the daylight magenta cast; "" = sensor default
+CAM_SHARPNESS=1.5          # ISP tuning (0-16); also CAM_CONTRAST/CAM_SATURATION/CAM_BRIGHTNESS/CAM_EV
+CAM_NOISE_REDUCTION=fast   # off|fast|high_quality|minimal|zsl
+CAM_SAT_BRIGHT=1.0         # saturation in real daylight (>= CAM_BRIGHT_LUX)
+CAM_SAT_DIM=0.7            # saturation at the day/night edge (artificial light = IR false colour)
+CAM_BRIGHT_LUX=400         # lux considered real daylight
+NIGHT_MAX_FPS=6            # night mode lowers fps so exposure can lengthen (real sensitivity)
+CAM_NIGHT_EV_MAX=1.0       # EV bias at total darkness (scaled to 0 at DAYNIGHT_NIGHT_LUX)
+DAYNIGHT_AUTO=1            # auto colour(day)/grayscale(night) off the camera Lux meter
+DAYNIGHT_NIGHT_LUX=5       # below this (sustained DAYNIGHT_NIGHT_AFTER=45s) -> night
+DAYNIGHT_DAY_LUX=12        # above this (sustained DAYNIGHT_DAY_AFTER=8s) -> day; eager to show colour
+DAYNIGHT_MODE=auto         # startup override: auto|day|night
+CAM_ZOOM=1.0               # digital zoom 1.0-CAM_ZOOM_MAX(4.0) via ScalerCrop
 SWITCH_PIN=17
 SWITCH_ON_VALUE=0
 TEMP_SOURCE=sensor         # or ha
@@ -60,6 +76,25 @@ See `.env.example` for the full list (servo tuning, Home Assistant, Cloudflare, 
 **Reverse‑proxy mode** — when another host (e.g. a Mac mini running Traefik/Authelia/Cloudflare) owns the public domain and proxies to the Pi: set `ENABLE_CLOUDFLARED=0`, `TRUST_PROXY_HEADERS=1`, and (behind Authelia) `TRUST_PROXY_AUTH_HEADERS=1` so a `Remote-User` header is trusted, plus `DOGCAM_LOGOUT_URL=https://auth.example/logout`. Camera movement is limited to users in `DOGCAM_CONTROL_GROUPS`; others can view only. Keep all `TRUST_PROXY_*` at `0` in standalone mode.
 
 **Temperature source** — `/temp` reads a local DHT22 (`TEMP_SOURCE=sensor`, needs `adafruit_dht`, wired to `GPIO4`) or Home Assistant (`TEMP_SOURCE=ha` + `HA_URL`/`HA_TOKEN`/`HA_*_ENTITY` using an HA long‑lived token). HA mode skips the DHT22 dependency.
+
+## Camera capabilities
+
+The sensor is an **OV5647 behind a wide‑angle NoIR (no IR‑cut filter) lens**. NoIR sees in the dark under IR light, but has two quirks this app handles:
+
+- **Daytime magenta cast.** With no IR‑cut filter, IR leaks into the red/blue channels and standard `ov5647.json` can't correct it (AWB alone leaves it purple). `CAM_TUNING_FILE=ov5647_noir.json` loads the NoIR colour‑correction matrix and neutralises it. *The tuned `Picamera2` must be constructed before any other camera‑manager call — `global_camera_info()` first silently pins the default tuning.*
+- **Automatic day/night.** `DAYNIGHT_AUTO=1` runs **colour by day, grayscale by night** (colour is pure noise under IR in the dark), switched off the camera's own AE **Lux** meter — no extra hardware. Two thresholds (`DAYNIGHT_NIGHT_LUX` / `DAYNIGHT_DAY_LUX`) with per‑direction sustain times give hysteresis; recovery to day is eager and descent to night is lazy, so a lit room always shows colour.
+- **Light‑adaptive tuning.** Under artificial light IR reflects unevenly (green ceiling, magenta fabric) — no white balance fixes it and saturation only amplifies it. So saturation scales with lux (`CAM_SAT_DIM` at the day edge → `CAM_SAT_BRIGHT` in real daylight). Night mode drops to `NIGHT_MAX_FPS` so exposure can lengthen (real light gathering, less power) and adds an EV bias that scales with darkness (a fixed boost blows out a lit room).
+
+All image tuning (`CAM_*`), day/night switching and digital zoom are **ISP‑side `set_controls()` — no pipeline restart and no measurable extra power** (bench‑tested: identical `vcgencmd get_throttled` at VGA vs 1296×972 vs 1080p under a live viewer; the `STREAM_MAX_FPS` cap, not pixel count, bounds the draw). Endpoints (control actions need `DOGCAM_CONTROL_GROUPS`; GETs are view‑only):
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/camera/info` | GET | active resolution, fps cap, zoom, tuning, day/night mode + lux |
+| `/camera/daynight` | GET / POST | read status / set override `{"mode":"auto\|day\|night"}` |
+| `/camera/zoom` | GET / POST | read / set digital zoom `{"zoom":2.0}` or `{"step":0.5}` |
+| `/snapshot` | GET | latest frame as a still JPEG (serves the live frame — no extra capture) |
+
+Tests: `python3 -m unittest tests.test_camera_features` (runs off‑Pi with stubbed camera libs).
 
 ## Raspberry Pi setup
 
