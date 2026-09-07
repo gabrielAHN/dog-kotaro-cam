@@ -120,6 +120,11 @@ class StalledCameraTest(unittest.TestCase):
         os.environ["SECRET_KEY"] = "test"
         cls.hw = _install_hardware_stubs()
         # Servo module imports RPi.GPIO; let it fail like on a dev box.
+        # Force a fresh dogcam_stream import bound to THIS module's stubs so the
+        # suite is order-independent under `unittest discover` (dogcam_stream is a
+        # module-level singleton that captures its stubs + env at import time).
+        for _m in ("dogcam_stream", "servo_control_rpigpio"):
+            sys.modules.pop(_m, None)
         import dogcam_stream
 
         cls.mod = dogcam_stream
